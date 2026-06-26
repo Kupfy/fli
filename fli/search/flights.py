@@ -42,6 +42,49 @@ class SearchParseError(Exception):
     """
 
 
+def _host_only(url: str) -> str:
+    """Best-effort hostname extraction for log messages."""
+    from urllib.parse import urlparse
+
+    try:
+        return urlparse(url).hostname or url
+    except Exception:  # noqa: BLE001 — logging must never break the request path
+        return url
+
+
+def _log_empty_response(response, url: str) -> None:
+    """Log diagnostics when a 2xx response carries no parseable wrb.fr payload.
+
+    ``raise_for_status()`` already passed, so this is a *successful* HTTP
+    response that simply contained nothing we could decode — typically a
+    consent/redirect interstitial, an "unusual traffic" challenge page, or a
+    soft block returning an empty body. None of those raise, so without this
+    the search just returns ``None`` and the caller sees an unexplained empty
+    result. Surface the status, body size, a guessed cause, and a short
+    sanitised snippet so the failure is actually diagnosable.
+    """
+    body = response.text or ""
+    snippet = " ".join(body[:500].split())
+    markers = {
+        "consent.google": "Google consent/cookie interstitial",
+        "/sorry/": "Google 'unusual traffic' / rate-limit block page",
+        "unusual traffic": "Google 'unusual traffic' / rate-limit block page",
+        "captcha": "CAPTCHA challenge",
+        "enablejs": "JavaScript-required interstitial",
+    }
+    low = body.lower()
+    hint = next((desc for needle, desc in markers.items() if needle in low), None)
+    logger.warning(
+        "Google Flights returned HTTP %s for %s with no parseable wrb.fr payload "
+        "(%d bytes). Likely cause: %s. Body starts: %r",
+        response.status_code,
+        _host_only(url),
+        len(body),
+        hint or "empty result set or unrecognised response shape",
+        snippet,
+        )
+
+
 class SearchFlights:
     """Flight search via Google Flights' FlightsFrontendService API.
 
@@ -94,12 +137,12 @@ class SearchFlights:
     # ------------------------------------------------------------------
 
     def search(
-        self,
-        filters: FlightSearchFilters,
-        top_n: int = 5,
-        currency: str | None = None,
-        language: str | None = None,
-        country: str | None = None,
+            self,
+            filters: FlightSearchFilters,
+            top_n: int = 5,
+            currency: str | None = None,
+            language: str | None = None,
+            country: str | None = None,
     ) -> list[FlightResult | tuple[FlightResult, ...]] | None:
         """Search for flights using the given :class:`FlightSearchFilters`.
 
@@ -142,13 +185,13 @@ class SearchFlights:
         )
 
     def _fetch_flights(
-        self,
-        filters: FlightSearchFilters,
-        *,
-        currency: str | None,
-        language: str | None,
-        country: str | None,
-        capture_session: bool,
+            self,
+            filters: FlightSearchFilters,
+            *,
+            currency: str | None,
+            language: str | None,
+            country: str | None,
+            capture_session: bool,
     ) -> list[FlightResult] | None:
         """Issue one ``GetShoppingResults`` call and decode the flight rows.
 
@@ -173,6 +216,7 @@ class SearchFlights:
 
         inner = parse_first_wrb_payload(response.text)
         if inner is None:
+            _log_empty_response(response, url)
             return None
 
         if capture_session:
@@ -216,17 +260,26 @@ class SearchFlights:
                 f"Google response shape may have changed (sample reasons: {sample})"
             )
 
+        if not flights:
+            logger.warning(
+                "Google Flights returned HTTP %s for %s but yielded 0 flights "
+                "(%d candidate rows parsed). Likely an empty result set or a "
+                "soft block rather than a hard HTTP error.",
+                response.status_code,
+                _host_only(url),
+                len(flights_raw),
+            )
         return flights or None
 
     def get_booking_options(
-        self,
-        flight: FlightResult | tuple[FlightResult, ...],
-        filters: FlightSearchFilters,
-        currency: str | None = None,
-        language: str | None = None,
-        country: str | None = None,
-        booking_token: str | None = None,
-        session_id: str | None = None,
+            self,
+            flight: FlightResult | tuple[FlightResult, ...],
+            filters: FlightSearchFilters,
+            currency: str | None = None,
+            language: str | None = None,
+            country: str | None = None,
+            booking_token: str | None = None,
+            session_id: str | None = None,
     ) -> list[BookingOption]:
         """Fetch bookable fare options for a selected itinerary.
 
@@ -351,12 +404,12 @@ class SearchFlights:
         return options
 
     def build_flight_booking_url(
-        self,
-        flight: FlightResult | tuple[FlightResult, ...],
-        *,
-        currency: str | None = None,
-        language: str | None = None,
-        country: str | None = None,
+            self,
+            flight: FlightResult | tuple[FlightResult, ...],
+            *,
+            currency: str | None = None,
+            language: str | None = None,
+            country: str | None = None,
     ) -> str:
         """Build a Google Flights deep-link URL for a specific itinerary.
 
@@ -445,14 +498,14 @@ class SearchFlights:
     # ------------------------------------------------------------------
 
     def _expand_multi_leg(
-        self,
-        flights: list[FlightResult],
-        filters: FlightSearchFilters,
-        *,
-        top_n: int,
-        currency: str | None,
-        language: str | None,
-        country: str | None,
+            self,
+            flights: list[FlightResult],
+            filters: FlightSearchFilters,
+            *,
+            top_n: int,
+            currency: str | None,
+            language: str | None,
+            country: str | None,
     ) -> list[tuple[FlightResult, ...]] | list[FlightResult]:
         """Fetch next-leg options for round-trip / multi-city in parallel.
 

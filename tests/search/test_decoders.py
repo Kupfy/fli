@@ -49,6 +49,19 @@ class TestSafeAirline:
         assert result is None
         assert any("ZZFAKE" in r.message for r in caplog.records)
 
+class TestDuplicatedAirline:
+    def test_original_code_returns_enum(self):
+        from fli.models import Airline
+
+        result = _safe_airline("W6")
+        assert result is Airline.W6
+
+    def test_alias_code_returns_enum(self):
+        from fli.models import Airline
+
+        result = _safe_airline("W9")
+        assert result is Airline.W6
+
 
 class TestParseDatetime:
     def test_valid_arrays_produce_datetime(self):
